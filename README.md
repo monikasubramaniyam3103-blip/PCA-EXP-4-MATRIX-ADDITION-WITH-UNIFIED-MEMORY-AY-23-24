@@ -39,247 +39,105 @@ Allocate Host Memory
 22.	Reset the device using cudaDeviceReset and return from the main function.
 
 ## PROGRAM:
-```%%writefile unifmem1.cu
+```
+%%writefile matrix_add_unified_memset_compare.cu
+
 #include <stdio.h>
 #include <cuda_runtime.h>
-#include <cuda.h>
 #include <sys/time.h>
 
-#ifndef _COMMON_H
-#define _COMMON_H
-
-#define CHECK(call)                                                            \
-{                                                                              \
-    const cudaError_t error = call;                                            \
-    if (error != cudaSuccess)                                                  \
-    {                                                                          \
-        fprintf(stderr, "Error: %s:%d, ", __FILE__, __LINE__);                 \
-        fprintf(stderr, "code: %d, reason: %s\n", error,                       \
-                cudaGetErrorString(error));                                    \
-        exit(1);                                                               \
-    }                                                                          \
-}
-
-#define CHECK_CUBLAS(call)                                                     \
-{                                                                              \
-    cublasStatus_t err;                                                        \
-    if ((err = (call)) != CUBLAS_STATUS_SUCCESS)                               \
-    {                                                                          \
-        fprintf(stderr, "Got CUBLAS error %d at %s:%d\n", err, __FILE__,       \
-                __LINE__);                                                     \
-        exit(1);                                                               \
-    }                                                                          \
-}
-
-#define CHECK_CURAND(call)                                                     \
-{                                                                              \
-    curandStatus_t err;                                                        \
-    if ((err = (call)) != CURAND_STATUS_SUCCESS)                               \
-    {                                                                          \
-        fprintf(stderr, "Got CURAND error %d at %s:%d\n", err, __FILE__,       \
-                __LINE__);                                                     \
-        exit(1);                                                               \
-    }                                                                          \
-}
-
-#define CHECK_CUFFT(call)                                                      \
-{                                                                              \
-    cufftResult err;                                                           \
-    if ( (err = (call)) != CUFFT_SUCCESS)                                      \
-    {                                                                          \
-        fprintf(stderr, "Got CUFFT error %d at %s:%d\n", err, __FILE__,        \
-                __LINE__);                                                     \
-        exit(1);                                                               \
-    }                                                                          \
-}
-
-#define CHECK_CUSPARSE(call)                                                   \
-{                                                                              \
-    cusparseStatus_t err;                                                      \
-    if ((err = (call)) != CUSPARSE_STATUS_SUCCESS)                             \
-    {                                                                          \
-        fprintf(stderr, "Got error %d at %s:%d\n", err, __FILE__, __LINE__);   \
-        cudaError_t cuda_err = cudaGetLastError();                             \
-        if (cuda_err != cudaSuccess)                                           \
-        {                                                                      \
-            fprintf(stderr, "  CUDA error \"%s\" also detected\n",             \
-                    cudaGetErrorString(cuda_err));                             \
-        }                                                                      \
-        exit(1);                                                               \
-    }                                                                          \
+#define CHECK(call) \
+{ \
+    const cudaError_t error = call; \
+    if (error != cudaSuccess) \
+    { \
+        printf("Error: %s:%d, code:%d, reason:%s\n", \
+            __FILE__, __LINE__, error, cudaGetErrorString(error)); \
+        exit(1); \
+    } \
 }
 
 inline double seconds()
 {
     struct timeval tp;
-    struct timezone tzp;
-    int i = gettimeofday(&tp, &tzp);
-    return ((double)tp.tv_sec + (double)tp.tv_usec * 1.e-6);
+    gettimeofday(&tp, NULL);
+    return (double)tp.tv_sec + (double)tp.tv_usec * 1e-6;
 }
 
-#endif // _COMMON_H
-
-#include <cuda_runtime.h>
-#include <stdio.h>
-#include <cuda_runtime.h>
-#include <stdio.h>
-
-void initialData(float *ip, const int size)
+void initialData(float *ip, int size)
 {
-    int i;
-    for (i = 0; i < size; i++)
-    {
-        ip[i] = (float)( rand() & 0xFF ) / 10.0f;
-    }
-    return;
+    for (int i = 0; i < size; i++)
+        ip[i] = (float)(rand() & 0xFF) / 10.0f;
 }
 
-void sumMatrixOnHost(float *A, float *B, float *C, const int nx, const int ny)
-{
-    float *ia = A;
-    float *ib = B;
-    float *ic = C;
-
-    for (int iy = 0; iy < ny; iy++)
-    {
-        for (int ix = 0; ix < nx; ix++)
-        {
-            ic[ix] = ia[ix] + ib[ix];
-        }
-
-        ia += nx;
-        ib += nx;
-        ic += nx;
-    }
-
-    return;
-}
-
-void checkResult(float *hostRef, float *gpuRef, const int N)
-{
-    double epsilon = 1.0E-8;
-    bool match = 1;
-
-    for (int i = 0; i < N; i++)
-    {
-        if (abs(hostRef[i] - gpuRef[i]) > epsilon)
-        {
-            match = 0;
-            printf("host %f gpu %f\n", hostRef[i], gpuRef[i]);
-            break;
-        }
-    }
-
-    if (!match)
-    {
-        printf("Arrays do not match.\n\n");
-    }
-}
-
-// grid 2D block 2D
-__global__ void sumMatrixGPU(float *MatA, float *MatB, float *MatC, int nx,
-                             int ny)
+__global__ void sumMatrixGPU(float *A, float *B, float *C, int nx, int ny)
 {
     unsigned int ix = threadIdx.x + blockIdx.x * blockDim.x;
     unsigned int iy = threadIdx.y + blockIdx.y * blockDim.y;
-    unsigned int idx = iy * nx + ix;
 
     if (ix < nx && iy < ny)
     {
-        MatC[idx] = MatA[idx] + MatB[idx];
+        int idx = iy * nx + ix;
+        C[idx] = A[idx] + B[idx];
     }
 }
 
-int main(int argc, char **argv)
+int main()
 {
-    printf("%s Starting ", argv[0]);
+    printf("Unified Memory Matrix Addition: memset vs no memset\n");
 
-    // set up device
-    int dev = 0;
-    cudaDeviceProp deviceProp;
-    CHECK(cudaGetDeviceProperties(&deviceProp, dev));
-    printf("using Device %d: %s\n", dev, deviceProp.name);
-    CHECK(cudaSetDevice(dev));
+    int nx = 1 << 12;  
+    int ny = 1 << 12;
+    int n = nx * ny;
+    size_t nBytes = n * sizeof(float);
 
-    // set up data size of matrix
-    int nx, ny;
-    int ishift = 12;
+    float *A, *B, *C1, *C2;
+    CHECK(cudaMallocManaged(&A, nBytes));
+    CHECK(cudaMallocManaged(&B, nBytes));
+    CHECK(cudaMallocManaged(&C1, nBytes)); // WITH memset
+    CHECK(cudaMallocManaged(&C2, nBytes)); // WITHOUT memset
 
-    if  (argc > 1) ishift = atoi(argv[1]);
+    initialData(A, n);
+    initialData(B, n);
 
-    nx = ny = 1 << ishift;
+    dim3 block(32, 32);
+    dim3 grid((nx + 31) / 32, (ny + 31) / 32);
 
-    int nxy = nx * ny;
-    int nBytes = nxy * sizeof(float);
-    printf("Matrix size: nx %d ny %d\n", nx, ny);
+    // ---------------- WITH MEMSET ----------------
+    CHECK(cudaMemset(C1, 0, nBytes));
 
-    // malloc host memory
-    float *A, *B, *hostRef, *gpuRef;
-    CHECK(cudaMallocManaged((void **)&A, nBytes));
-    CHECK(cudaMallocManaged((void **)&B, nBytes));
-    CHECK(cudaMallocManaged((void **)&gpuRef,  nBytes);  );
-    CHECK(cudaMallocManaged((void **)&hostRef, nBytes););
-
-
-    // initialize data at host side
-    double iStart = seconds();
-    initialData(A, nxy);
-    initialData(B, nxy);
-    double iElaps = seconds() - iStart;
-    printf("initialization: \t %f sec\n", iElaps);
-
-    memset(hostRef, 0, nBytes);
-    memset(gpuRef, 0, nBytes);
-
-    // add matrix at host side for result checks
-    iStart = seconds();
-    sumMatrixOnHost(A, B, hostRef, nx, ny);
-    iElaps = seconds() - iStart;
-    printf("sumMatrix on host:\t %f sec\n", iElaps);
-
-    // invoke kernel at host side
-    int dimx = 32;
-    int dimy = 32;
-    dim3 block(dimx, dimy);
-    dim3 grid((nx + block.x - 1) / block.x, (ny + block.y - 1) / block.y);
-
-    // warm-up kernel, with unified memory all pages will migrate from host to
-    // device
-    sumMatrixGPU<<<grid, block>>>(A, B, gpuRef, 1, 1);
-
-    // after warm-up, time with unified memory
-    iStart = seconds();
-
-    sumMatrixGPU<<<grid, block>>>(A, B, gpuRef, nx, ny);
-
+    double start = seconds();
+    sumMatrixGPU<<<grid, block>>>(A, B, C1, nx, ny);
     CHECK(cudaDeviceSynchronize());
-    iElaps = seconds() - iStart;
-    printf("sumMatrix on gpu :\t %f sec <<<(%d,%d), (%d,%d)>>> \n", iElaps,
-            grid.x, grid.y, block.x, block.y);
+    double time_with = seconds() - start;
 
-    // check kernel error
-    CHECK(cudaGetLastError());
+    printf("GPU Time WITH memset: %f sec\n", time_with);
 
-    // check device results
-    checkResult(hostRef, gpuRef, nxy);
+    // ---------------- WITHOUT MEMSET ----------------
+    // NOTE: C2 is NOT memset → reused memory
 
-    // free device global memory
+    start = seconds();
+    sumMatrixGPU<<<grid, block>>>(A, B, C2, nx, ny);
+    CHECK(cudaDeviceSynchronize());
+    double time_without = seconds() - start;
+
+    printf("GPU Time WITHOUT memset: %f sec\n", time_without);
+
+    // Cleanup
     CHECK(cudaFree(A));
     CHECK(cudaFree(B));
-    CHECK(cudaFree(hostRef));
-    CHECK(cudaFree(gpuRef));
+    CHECK(cudaFree(C1));
+    CHECK(cudaFree(C2));
 
-    // reset device
     CHECK(cudaDeviceReset());
-
-    return (0);
+    return 0;
 }
+
+!nvcc -arch=sm_75 matrix_add_unified_memset_compare.cu -o unified_test
+!./unified_test
 ```
-
 ## OUTPUT:
-<img width="984" height="681" alt="image" src="https://github.com/user-attachments/assets/ad8a6b95-8787-4da9-9754-5fe8f530821d" />
-<img width="1064" height="651" alt="image" src="https://github.com/user-attachments/assets/c0150a0c-6a11-48c9-bb89-a9b6417505e0" />
-
+<img width="774" height="141" alt="image" src="https://github.com/user-attachments/assets/99f4b3e1-fb77-48ee-8f64-09fd1d1fa47b" />
 
 ## RESULT:
 Thus the program has been executed by using unified memory. It is observed that removing memset function has given less execution time.
