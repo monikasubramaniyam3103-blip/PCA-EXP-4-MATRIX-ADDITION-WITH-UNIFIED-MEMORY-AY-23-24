@@ -278,6 +278,7 @@ int main(int argc, char **argv)
 
 ## OUTPUT:
 <img width="984" height="681" alt="image" src="https://github.com/user-attachments/assets/ad8a6b95-8787-4da9-9754-5fe8f530821d" />
+<img width="1064" height="651" alt="image" src="https://github.com/user-attachments/assets/c0150a0c-6a11-48c9-bb89-a9b6417505e0" />
 
 
 ## RESULT:
